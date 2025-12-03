@@ -1,7 +1,11 @@
-import { Shield, ArrowLeft } from "lucide-react";
+import { Shield, ArrowLeft, MapPin } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
-export function ChatHeader() {
+interface ChatHeaderProps {
+  storeName?: string;
+}
+
+export function ChatHeader({ storeName }: ChatHeaderProps) {
   const navigate = useNavigate();
 
   return (
@@ -18,6 +22,15 @@ export function ChatHeader() {
           <div className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-accent animate-pulse-soft" />
             <span className="text-sm text-muted-foreground">Online</span>
+            {storeName && (
+              <>
+                <span className="text-muted-foreground">•</span>
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                  <MapPin className="w-3 h-3" />
+                  {storeName}
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>
