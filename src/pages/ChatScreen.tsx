@@ -8,6 +8,8 @@ import { SuggestionBubble } from "@/components/SuggestionBubble";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { useStore } from "@/contexts/StoreContext";
+import { STORES } from "@/hooks/useGeolocation";
 
 type MessageType = 
   | { type: "text"; isUser: boolean; content: string }
@@ -16,12 +18,10 @@ type MessageType =
   | { type: "suggestion"; isUser: false; suggestion: string; highlight?: string }
   | { type: "actions"; isUser: false; actions: string[] };
 
-type ChatMessage = { role: "user" | "assistant"; content: string };
+type ChatMsg = { role: "user" | "assistant"; content: string };
 
 const maskPII = (text: string): string => {
-  // Mask phone numbers
   let masked = text.replace(/(\+91[-\s]?)?[6-9]\d{9}/g, "+91-XXXXXXXXXX");
-  // Mask emails
   masked = masked.replace(/([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g, 
     (_, local) => `${local.charAt(0)}***@***.com`);
   return masked;
@@ -29,9 +29,14 @@ const maskPII = (text: string): string => {
 
 export default function ChatScreen() {
   const [messages, setMessages] = useState<MessageType[]>([]);
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [chatHistory, setChatHistory] = useState<ChatMsg[]>([]);
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { nearestStore, distance, userCoordinates } = useStore();
+
+  // Use detected store or fallback to default
+  const currentStore = nearestStore || STORES[0];
+  const currentDistance = distance || "nearby";
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -41,12 +46,17 @@ export default function ChatScreen() {
     scrollToBottom();
   }, [messages]);
 
-  // Initial greeting
+  // Initial greeting with detected store
   useEffect(() => {
     const initChat = async () => {
       await new Promise(r => setTimeout(r, 500));
+      
+      const locationInfo = userCoordinates 
+        ? `I detected you're ${currentDistance} from ${currentStore.name}!`
+        : `I found ${currentStore.name} near you!`;
+      
       setMessages([
-        { type: "text", isUser: false, content: "Hi there! 👋 I'm ShopBuddy, your personal support assistant. I noticed you're near Starbucks JP Nagar!" },
+        { type: "text", isUser: false, content: `Hi there! 👋 I'm ShopBuddy, your personal support assistant. ${locationInfo}` },
       ]);
       
       await new Promise(r => setTimeout(r, 800));
@@ -59,28 +69,32 @@ export default function ChatScreen() {
         content: "How can I help you today? You can ask about store hours, menu items, or get personalized recommendations!" 
       }]);
 
-      // Initialize chat history with greeting
       setChatHistory([
-        { role: "assistant", content: "Hi there! I'm ShopBuddy, your personal support assistant. I noticed you're near Starbucks JP Nagar! How can I help you today?" }
+        { role: "assistant", content: `Hi there! I'm ShopBuddy, your personal support assistant. ${locationInfo} How can I help you today?` }
       ]);
     };
     
     initChat();
-  }, []);
+  }, [currentStore.name, currentDistance, userCoordinates]);
 
   const handleSend = async (message: string) => {
     const maskedMessage = maskPII(message);
     setMessages(prev => [...prev, { type: "text", isUser: true, content: maskedMessage }]);
     setIsTyping(true);
 
-    // Update chat history
     const updatedHistory = [...chatHistory, { role: "user" as const, content: maskedMessage }];
     setChatHistory(updatedHistory);
 
     try {
-      // Call the AI edge function
       const { data, error } = await supabase.functions.invoke('chat', {
-        body: { messages: updatedHistory }
+        body: { 
+          messages: updatedHistory,
+          storeContext: {
+            store: currentStore,
+            distance: currentDistance,
+            userLocation: userCoordinates
+          }
+        }
       });
 
       if (error) {
@@ -106,50 +120,48 @@ export default function ChatScreen() {
       }
 
       const aiResponse = data.response;
-      
-      // Update chat history with AI response
       setChatHistory(prev => [...prev, { role: "assistant", content: aiResponse }]);
 
-      // Parse response for rich cards
       const lowerResponse = aiResponse.toLowerCase();
       const lowerMessage = message.toLowerCase();
 
-      // Check if response mentions store info
-      if (lowerMessage.includes("open") || lowerMessage.includes("hours") || lowerMessage.includes("store") || lowerMessage.includes("where")) {
+      if (lowerMessage.includes("open") || lowerMessage.includes("hours") || lowerMessage.includes("store") || lowerMessage.includes("where") || lowerMessage.includes("location")) {
         setMessages(prev => [...prev, { type: "store", isUser: false }]);
       }
 
-      // Add the text response
       setMessages(prev => [...prev, { type: "text", isUser: false, content: aiResponse }]);
 
-      // Check if response mentions products
-      if (lowerResponse.includes("cocoa") || lowerResponse.includes("hot chocolate")) {
-        setMessages(prev => [...prev, { type: "inventory", isUser: false, product: "Hot Cocoa", quantity: 10 }]);
-      } else if (lowerResponse.includes("cappuccino")) {
-        setMessages(prev => [...prev, { type: "inventory", isUser: false, product: "Cappuccino", quantity: 15 }]);
-      } else if (lowerResponse.includes("latte")) {
-        setMessages(prev => [...prev, { type: "inventory", isUser: false, product: "Latte", quantity: 12 }]);
+      // Show inventory cards based on store inventory
+      const inventory = currentStore.inventory;
+      for (const item of inventory) {
+        if (lowerResponse.includes(item.name.toLowerCase())) {
+          setMessages(prev => [...prev, { 
+            type: "inventory", 
+            isUser: false, 
+            product: item.name, 
+            quantity: item.quantity 
+          }]);
+          break;
+        }
       }
 
-      // Check for suggestion context
       if (lowerMessage.includes("cold") || lowerMessage.includes("warm") || lowerMessage.includes("suggest") || lowerMessage.includes("recommend")) {
-        if (!lowerResponse.includes("cocoa")) {
+        if (!lowerResponse.includes("cocoa") && !lowerResponse.includes("hot")) {
           setMessages(prev => [...prev, { 
             type: "suggestion", 
             isUser: false, 
-            suggestion: "Based on your preferences, I'd recommend our warm drinks!", 
-            highlight: "Check out our special offers!" 
+            suggestion: "Based on your preferences, check out our recommendations!", 
+            highlight: "Special offers available!" 
           }]);
         }
       }
 
     } catch (error) {
       console.error("Failed to get AI response:", error);
-      // Fallback to a helpful message
       setMessages(prev => [...prev, { 
         type: "text", 
         isUser: false, 
-        content: "I'm having trouble connecting right now. You can ask me about store hours, menu items, or get personalized recommendations. Try again in a moment!" 
+        content: "I'm having trouble connecting right now. Try again in a moment!" 
       }]);
     } finally {
       setIsTyping(false);
@@ -164,9 +176,14 @@ export default function ChatScreen() {
   };
 
   const handleDirections = () => {
+    // Open Google Maps with store coordinates
+    if (currentStore) {
+      const url = `https://www.google.com/maps/dir/?api=1&destination=${currentStore.latitude},${currentStore.longitude}`;
+      window.open(url, '_blank');
+    }
     toast({
       title: "📍 Opening Maps",
-      description: "Directions to Starbucks JP Nagar",
+      description: `Directions to ${currentStore.name}`,
     });
   };
 
@@ -183,9 +200,8 @@ export default function ChatScreen() {
 
   return (
     <div className="h-screen flex flex-col bg-background">
-      <ChatHeader />
+      <ChatHeader storeName={currentStore.name} />
       
-      {/* Chat Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-hide">
         {messages.map((msg, index) => {
           if (msg.type === "text") {
@@ -195,9 +211,9 @@ export default function ChatScreen() {
             return (
               <div key={index} className="max-w-[85%] md:max-w-[75%] animate-slide-in-left">
                 <StoreCard
-                  name="Starbucks JP Nagar"
-                  status="Open until 9PM"
-                  distance="50m"
+                  name={currentStore.name}
+                  status={currentStore.hours}
+                  distance={currentDistance}
                   isOpen={true}
                   onDirections={handleDirections}
                   compact

@@ -1,11 +1,51 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { MessageCircle, Sparkles } from "lucide-react";
+import { MessageCircle, Sparkles, MapPin, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StoreCard } from "@/components/StoreCard";
 import { PrivacyBadge } from "@/components/PrivacyBadge";
+import { useGeolocation, findNearestStore, STORES } from "@/hooks/useGeolocation";
+import { useStore } from "@/contexts/StoreContext";
 
 export default function WelcomeScreen() {
   const navigate = useNavigate();
+  const { coordinates, error, loading, requestLocation } = useGeolocation();
+  const { setNearestStore, setUserCoordinates } = useStore();
+  const [detectedStore, setDetectedStore] = useState<{
+    store: typeof STORES[0];
+    formattedDistance: string;
+  } | null>(null);
+  const [locationRequested, setLocationRequested] = useState(false);
+
+  // Auto-request location on mount
+  useEffect(() => {
+    if (!locationRequested) {
+      requestLocation();
+      setLocationRequested(true);
+    }
+  }, [locationRequested, requestLocation]);
+
+  // Find nearest store when coordinates are available
+  useEffect(() => {
+    if (coordinates) {
+      const result = findNearestStore(coordinates.latitude, coordinates.longitude);
+      setDetectedStore({
+        store: result.store,
+        formattedDistance: result.formattedDistance,
+      });
+      setNearestStore(result.store, result.formattedDistance);
+      setUserCoordinates(coordinates);
+    }
+  }, [coordinates, setNearestStore, setUserCoordinates]);
+
+  const handleStartChat = () => {
+    // If no location, use default store
+    if (!detectedStore) {
+      const defaultStore = STORES[0];
+      setNearestStore(defaultStore, "nearby");
+    }
+    navigate("/chat");
+  };
 
   return (
     <div className="min-h-screen gradient-hero flex flex-col">
@@ -27,18 +67,76 @@ export default function WelcomeScreen() {
             </div>
           </div>
 
-          {/* Detected Store */}
+          {/* Location Detection */}
           <div className="space-y-3 animate-fade-in-up" style={{ animationDelay: "100ms" }}>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Sparkles className="w-4 h-4 text-primary" />
-              <span>Nearby store detected</span>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                {loading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 text-primary animate-spin" />
+                    <span>Detecting your location...</span>
+                  </>
+                ) : detectedStore ? (
+                  <>
+                    <MapPin className="w-4 h-4 text-accent" />
+                    <span className="text-accent font-medium">Location detected</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4 text-primary" />
+                    <span>Nearby store</span>
+                  </>
+                )}
+              </div>
+              {error && (
+                <button
+                  onClick={requestLocation}
+                  className="flex items-center gap-1 text-sm text-primary hover:underline"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Retry
+                </button>
+              )}
             </div>
-            <StoreCard
-              name="Starbucks JP Nagar"
-              status="Open until 9PM"
-              distance="50m away"
-              isOpen={true}
-            />
+
+            {loading ? (
+              <div className="bg-card rounded-3xl p-6 shadow-card border border-border animate-pulse">
+                <div className="flex items-start gap-4">
+                  <div className="w-16 h-16 rounded-2xl bg-secondary" />
+                  <div className="flex-1 space-y-2">
+                    <div className="h-4 bg-secondary rounded w-1/2" />
+                    <div className="h-3 bg-secondary rounded w-3/4" />
+                    <div className="h-3 bg-secondary rounded w-1/3" />
+                  </div>
+                </div>
+              </div>
+            ) : detectedStore ? (
+              <StoreCard
+                name={detectedStore.store.name}
+                status={detectedStore.store.hours}
+                distance={detectedStore.formattedDistance}
+                isOpen={true}
+              />
+            ) : (
+              <StoreCard
+                name={STORES[0].name}
+                status={STORES[0].hours}
+                distance="nearby"
+                isOpen={true}
+              />
+            )}
+
+            {error && (
+              <p className="text-sm text-muted-foreground text-center">
+                {error}. Using default store location.
+              </p>
+            )}
+
+            {coordinates && (
+              <p className="text-xs text-muted-foreground text-center">
+                📍 Your location: {coordinates.latitude.toFixed(4)}, {coordinates.longitude.toFixed(4)}
+              </p>
+            )}
           </div>
 
           {/* Privacy Note */}
@@ -51,10 +149,11 @@ export default function WelcomeScreen() {
             <Button
               size="lg"
               className="w-full"
-              onClick={() => navigate("/chat")}
+              onClick={handleStartChat}
+              disabled={loading}
             >
               <MessageCircle className="w-5 h-5" />
-              Start Chatting
+              {loading ? "Detecting location..." : "Start Chatting"}
             </Button>
           </div>
         </div>

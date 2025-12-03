@@ -6,71 +6,66 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Mock store data for RAG
-const storeData = {
+// Default store data (fallback)
+const defaultStoreData = {
   name: "Starbucks JP Nagar",
-  status: "Open",
   hours: "Open until 9PM",
-  distance: "50m",
-  address: "123 JP Nagar Main Road, Bangalore",
+  address: "JP Nagar 6th Phase, Bangalore",
   inventory: [
-    { name: "Hot Cocoa", inStock: true, quantity: 10, price: 250, category: "hot drinks" },
-    { name: "Cappuccino", inStock: true, quantity: 15, price: 300, category: "coffee" },
-    { name: "Latte", inStock: true, quantity: 12, price: 320, category: "coffee" },
-    { name: "Espresso", inStock: true, quantity: 20, price: 200, category: "coffee" },
-    { name: "Iced Mocha", inStock: true, quantity: 8, price: 350, category: "cold drinks" },
-    { name: "Croissant", inStock: true, quantity: 5, price: 180, category: "food" },
-    { name: "Blueberry Muffin", inStock: false, quantity: 0, price: 150, category: "food" },
+    { name: "Hot Cocoa", inStock: true, quantity: 10, price: 250 },
+    { name: "Cappuccino", inStock: true, quantity: 15, price: 300 },
+    { name: "Latte", inStock: true, quantity: 12, price: 320 },
+    { name: "Iced Mocha", inStock: true, quantity: 8, price: 350 },
   ],
-  offers: [
-    { product: "Hot Cocoa", discount: "10%", code: "WARM10" },
-    { product: "Cappuccino", discount: "15%", code: "COFFEE15" },
-  ]
 };
 
 // Mask PII function
 function maskPII(text: string): string {
-  // Mask phone numbers
   let masked = text.replace(/(\+91[-\s]?)?[6-9]\d{9}/g, "+91-XXXXXXXXXX");
-  // Mask emails
   masked = masked.replace(/([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g, 
     (_, local) => `${local.charAt(0)}***@***.com`);
   return masked;
 }
 
 // Build context from store data (RAG simulation)
-function buildStoreContext(): string {
-  const inventory = storeData.inventory
-    .map(item => `- ${item.name}: ${item.inStock ? `In Stock (${item.quantity} available)` : 'Out of Stock'}, ₹${item.price}`)
+function buildStoreContext(storeContext: any): string {
+  const store = storeContext?.store || defaultStoreData;
+  const distance = storeContext?.distance || "nearby";
+  const userLocation = storeContext?.userLocation;
+
+  const inventory = (store.inventory || defaultStoreData.inventory)
+    .map((item: any) => `- ${item.name}: ${item.inStock ? `In Stock (${item.quantity} available)` : 'Out of Stock'}, ₹${item.price}`)
     .join('\n');
-  
-  const offers = storeData.offers
-    .map(offer => `- ${offer.product}: ${offer.discount} off with code ${offer.code}`)
-    .join('\n');
+
+  const locationInfo = userLocation 
+    ? `User's exact coordinates: ${userLocation.latitude.toFixed(4)}, ${userLocation.longitude.toFixed(4)}`
+    : "User location: approximate";
 
   return `
 STORE INFORMATION:
-- Name: ${storeData.name}
-- Status: ${storeData.status} (${storeData.hours})
-- Distance from user: ${storeData.distance}
-- Address: ${storeData.address}
+- Name: ${store.name}
+- Status: Open (${store.hours})
+- Distance from user: ${distance}
+- Address: ${store.address || "Address available in app"}
+- ${locationInfo}
 
-CURRENT INVENTORY:
+CURRENT INVENTORY AT ${store.name.toUpperCase()}:
 ${inventory}
 
 ACTIVE OFFERS:
-${offers}
+- Hot drinks: 10% off with code WARM10
+- Any coffee: 15% off with code COFFEE15
+- First-time customers: Free cookie with any drink
 `;
 }
 
 serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const { messages } = await req.json();
+    const { messages, storeContext } = await req.json();
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     
     if (!LOVABLE_API_KEY) {
@@ -84,29 +79,30 @@ serve(async (req) => {
       content: maskPII(msg.content)
     }));
 
-    console.log("Processing chat request with", maskedMessages.length, "messages");
+    const storeName = storeContext?.store?.name || defaultStoreData.name;
+    console.log(`Processing chat request for store: ${storeName}, messages: ${maskedMessages.length}`);
 
-    // Build system prompt with RAG context
-    const systemPrompt = `You are ShopBuddy AI, a friendly and helpful customer support assistant for retail stores. You have access to real-time store data and inventory information.
+    // Build system prompt with dynamic RAG context
+    const systemPrompt = `You are ShopBuddy AI, a friendly and helpful customer support assistant for retail stores. You have access to real-time store data and inventory information based on the user's ACTUAL detected location.
 
-${buildStoreContext()}
+${buildStoreContext(storeContext)}
 
 IMPORTANT GUIDELINES:
 1. Be warm, friendly, and helpful - like a knowledgeable friend who works at the store
-2. Use the store data provided to give accurate, specific answers
-3. When users ask about products, check the inventory and provide availability info
-4. Proactively suggest relevant offers when appropriate
-5. If users seem cold or mention weather, suggest warm drinks like Hot Cocoa
+2. Use the store data provided to give accurate, specific answers about THIS specific store
+3. When users ask about products, check the inventory for THIS store and provide availability info
+4. Always mention the correct store name (${storeName}) and actual distance from user
+5. If users seem cold or mention weather, suggest warm drinks from THIS store's inventory
 6. Keep responses concise but informative (2-3 sentences max for simple questions)
-7. Use emojis sparingly to keep the tone friendly (1-2 per message max)
-8. Always mention the store name and distance when relevant
-9. If a product is out of stock, suggest alternatives
-10. Privacy is important - never ask for or expose personal information
+7. Use emojis sparingly (1-2 per message max) to keep a friendly tone
+8. If a product is not in this store's inventory, say so honestly and suggest alternatives they DO have
+9. Privacy is important - never ask for or expose personal information
+10. The distance shown is calculated from the user's actual GPS location
 
 RESPONSE FORMAT:
-- For store questions: Include store name, status, and distance
+- For store questions: Include store name, status, and the actual calculated distance
 - For product questions: Include availability, quantity if in stock, and any active offers
-- For recommendations: Consider context clues (weather, time, previous questions)`;
+- For recommendations: Consider the specific inventory at this location`;
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -155,15 +151,15 @@ RESPONSE FORMAT:
     const data = await response.json();
     const aiResponse = data.choices?.[0]?.message?.content || "I'm sorry, I couldn't process that request. Please try again.";
 
-    console.log("AI response generated successfully");
+    console.log("AI response generated successfully for", storeName);
 
     return new Response(JSON.stringify({ 
       response: aiResponse,
       storeData: {
-        name: storeData.name,
-        status: storeData.status,
-        hours: storeData.hours,
-        distance: storeData.distance
+        name: storeName,
+        status: "Open",
+        hours: storeContext?.store?.hours || defaultStoreData.hours,
+        distance: storeContext?.distance || "nearby"
       }
     }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
